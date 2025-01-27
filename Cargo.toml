@@ -1,0 +1,8 @@
+[package]
+name = "rust-text-transformer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+slug = "0.1.6"
+convert_case = "0.7.1"
