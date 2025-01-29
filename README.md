@@ -33,12 +33,12 @@ cargo build --release
 Run the program with one of the available operations as an argument:
 
 ```bash
-./string_transformer <operation>
+./rust-text-modifier <operation>
 ```
 
 Example:
 ```bash
-./string_transformer camelcase
+./rust-text-modifier camelcase
 Insert string to modify: hello world
 hello world -> helloWorld
 ```
