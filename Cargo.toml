@@ -6,3 +6,5 @@ edition = "2021"
 [dependencies]
 slug = "0.1.6"
 convert_case = "0.7.1"
+strum = "0.26.3"
+strum_macros = "0.26.3"
