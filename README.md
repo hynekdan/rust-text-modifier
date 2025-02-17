@@ -1,4 +1,4 @@
-# String Transformer
+# String Transformer (outdated :-( )
 
 A command-line utility written in Rust for performing various string transformations.
 

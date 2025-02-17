@@ -1,10 +1,11 @@
 use convert_case::{Case, Casing};
 use slug::slugify;
 
-use std::env;
 use std::error::Error;
 use std::fmt;
-use std::io::{self, Write};
+use std::fs::File;
+use std::io;
+use std::thread;
 
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
@@ -12,6 +13,8 @@ use strum_macros::EnumIter;
 use csv::{ReaderBuilder, StringRecord};
 
 use prettytable::{Cell, Row, Table};
+
+use flume::{Receiver, Sender};
 
 #[derive(Debug)]
 struct OperationError(String);
@@ -52,30 +55,7 @@ impl fmt::Display for CsvTable {
     }
 }
 
-fn get_input(prompt: &str) -> Result<String, Box<dyn Error>> {
-    println!("{}", prompt);
-    if prompt.contains("CSV") {
-        println!("Enter your CSV data (enter an empty line to finish):");
-        let mut input = String::new();
-        loop {
-            let mut line = String::new();
-            io::stdin().read_line(&mut line)?;
-            if line.trim().is_empty() {
-                break;
-            }
-            input.push_str(&line);
-        }
-        Ok(input)
-    } else {
-        print!("> ");
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        Ok(input.trim().to_string())
-    }
-}
-
-#[derive(EnumIter)]
+#[derive(Debug, EnumIter)]
 enum Operation {
     CamelCase,
     Csv,
@@ -127,11 +107,14 @@ fn process_camel_case(input: &str) -> Result<String, Box<dyn Error>> {
     Ok(input.to_case(Case::Camel))
 }
 
-fn process_csv(input: &str) -> Result<String, Box<dyn Error>> {
+fn process_csv(file_path: &str) -> Result<String, Box<dyn Error>> {
+    let file = File::open(file_path)
+        .map_err(|e| OperationError(format!("Failed to open file '{}': {}", file_path, e)))?;
+
     let mut reader = ReaderBuilder::new()
         .trim(csv::Trim::All)
         .flexible(true)
-        .from_reader(input.as_bytes());
+        .from_reader(file);
 
     let headers = reader.headers()?.clone();
     if headers.is_empty() {
@@ -180,36 +163,94 @@ fn process_operation(op: Operation, input: &str) -> Result<String, Box<dyn Error
     }
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = env::args().collect();
+#[derive(Debug)]
+struct Command {
+    operation: Operation,
+    input: String,
+}
 
-    if args.len() < 2 {
-        eprintln!("Error: It's required to pass an argument specifying the operation.");
-        Operation::print_available_operations();
-        return Ok(());
+fn input_thread(tx: Sender<Command>) -> Result<(), Box<dyn Error>> {
+    loop {
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input)? == 0 {
+            break;
+        }
+
+        // Split input into operation and data
+        let parts: Vec<&str> = input.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+
+        if parts.len() < 2 {
+            eprintln!("Error: Expected format: <operation> <input>");
+            Operation::print_available_operations();
+            continue;
+        }
+
+        match Operation::from_str(parts[0].trim()) {
+            Ok(operation) => {
+                // Consider everything after first space to be input data
+                let input = parts[1..].join(" ");
+                if let Err(e) = tx.send(Command { operation, input }) {
+                    eprintln!("Error sending command: {}", e);
+                    break;
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                Operation::print_available_operations();
+            }
+        }
+    }
+    Ok(())
+}
+
+fn processing_thread(rx: Receiver<Command>) -> Result<(), Box<dyn Error>> {
+    while let Ok(command) = rx.recv() {
+        println!("Selected operation: {}", command.operation.to_str());
+
+        match process_operation(command.operation, &command.input) {
+            Ok(result) => println!("{}", result),
+            Err(e) => eprintln!("Error processing input: {}", e),
+        }
+    }
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let (tx, rx) = flume::unbounded();
+
+    let input_handle = thread::spawn(move || {
+        if let Err(e) = input_thread(tx) {
+            eprintln!("Input thread error: {}", e);
+        }
+    });
+
+    let processing_handle = thread::spawn(move || {
+        if let Err(e) = processing_thread(rx) {
+            eprintln!("Processing thread error: {}", e);
+        }
+    });
+
+    if let Err(e) = input_handle.join() {
+        return Err(Box::new(OperationError(format!(
+            "Input thread panicked: {:?}",
+            e
+        ))));
     }
 
-    let operation = match Operation::from_str(&args[1]) {
-        Ok(op) => op,
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            Operation::print_available_operations();
-            return Ok(());
-        }
-    };
-
-    println!("Selected operation: {}", operation.to_str());
-
-    let input = if matches!(operation, Operation::Csv) {
-        get_input("Please enter your CSV data:")?
-    } else {
-        get_input("Insert string to modify:")?
-    };
-
-    match process_operation(operation, &input) {
-        Ok(result) => println!("{}", result),
-        Err(e) => eprintln!("Error processing input: {}", e),
+    if let Err(e) = processing_handle.join() {
+        return Err(Box::new(OperationError(format!(
+            "Processing thread panicked: {:?}",
+            e
+        ))));
     }
 
     Ok(())
 }
+
+// TODO add some unit tests and integration tests
+// TODO divide code into modules
+// TODO update README
+// TODO implement properly traits (FromStr)
